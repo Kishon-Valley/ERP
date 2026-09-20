@@ -2,19 +2,21 @@ import { sql } from "@/lib/db";
 import { DomainError } from "@/lib/domain/errors";
 
 type CheckoutLine = { productId: string; warehouseId: string; uom: string; quantity: number };
+type StockBalanceRow = { on_hand: string | number; reserved: string | number };
 
 export async function reserveStock(organizationId: string, salesOrderId: string, lines: CheckoutLine[]) {
   for (const line of lines) {
     if (line.quantity <= 0) throw new DomainError("INVALID_QUANTITY", "Quantity must be greater than zero.");
 
-    const rows = await sql`
+    const rows = (await sql`
       select on_hand, reserved
       from stock_balances
       where organization_id = ${organizationId}
         and warehouse_id = ${line.warehouseId}
         and product_id = ${line.productId}
       for update
-    `;
+    `) as unknown as StockBalanceRow[];
+
     const balance = rows[0];
     if (!balance) throw new DomainError("STOCK_NOT_FOUND", "No stock balance exists for the selected product and warehouse.");
     const available = Number(balance.on_hand) - Number(balance.reserved);

@@ -2,6 +2,8 @@ import { sql } from "@/lib/db";
 import { DomainError } from "@/lib/domain/errors";
 import { reserveStock } from "@/lib/application/inventory";
 
+type Row = Record<string, any>;
+
 export type CheckoutInput = {
   organizationId: string;
   branchId: string;
@@ -15,28 +17,28 @@ export type CheckoutInput = {
 export async function postSale(input: CheckoutInput) {
   if (!input.lines.length) throw new DomainError("EMPTY_CART", "A sale requires at least one line.");
 
-  const existing = await sql`
+  const existing = (await sql`
     select id, total, status from sales_orders
     where organization_id = ${input.organizationId} and idempotency_key = ${input.idempotencyKey}
-  `;
+  `) as unknown as Row[];
   if (existing[0]) return existing[0];
 
-  const customer = await sql`
+  const customer = (await sql`
     select credit_limit, credit_hold,
       coalesce((select sum(balance_due) from invoices i where i.organization_id = c.organization_id and i.customer_id = c.id and i.status = 'POSTED'),0) as exposure
     from customers c
     where c.organization_id = ${input.organizationId} and c.id = ${input.customerId}
     for update
-  `;
+  `) as unknown as Row[];
   if (!customer[0]) throw new DomainError("CUSTOMER_NOT_FOUND", "Customer was not found.");
   if (customer[0].credit_hold) throw new DomainError("CREDIT_HOLD", "Customer is on credit hold.");
 
-  const products = await sql`
+  const products = (await sql`
     select id, unit_price, tax_rate from products
     where organization_id = ${input.organizationId}
       and id = any(${input.lines.map(x => x.productId)})
       and is_active = true
-  `;
+  `) as unknown as Row[];
 
   let subtotal = 0;
   let discountTotal = 0;
@@ -47,7 +49,7 @@ export async function postSale(input: CheckoutInput) {
     const product = products.find(p => p.id === line.productId);
     if (!product) throw new DomainError("PRODUCT_NOT_FOUND", `Product ${line.productId} was not found.`);
 
-    const rule = await sql`
+    const rule = (await sql`
       select unit_price, discount_rate from price_rules
       where organization_id = ${input.organizationId}
         and product_id = ${line.productId}
@@ -62,7 +64,7 @@ export async function postSale(input: CheckoutInput) {
         (branch_id is not null) desc,
         priority desc
       limit 1
-    `;
+    `) as unknown as Row[];
     const unitPrice = Number(rule[0]?.unit_price ?? product.unit_price);
     const discountRate = Number(rule[0]?.discount_rate ?? 0);
     const net = unitPrice * line.quantity * (1 - discountRate);
@@ -81,14 +83,14 @@ export async function postSale(input: CheckoutInput) {
     });
   }
 
-  const order = await sql`
+  const order = (await sql`
     insert into sales_orders
       (organization_id, branch_id, customer_id, project_id, status, subtotal, discount_total, tax_total, total, idempotency_key)
     values
       (${input.organizationId}, ${input.branchId}, ${input.customerId}, ${input.projectId ?? null}, 'POSTED',
        ${subtotal}, ${discountTotal}, ${taxTotal}, ${total}, ${input.idempotencyKey})
     returning id, total, status
-  `;
+  `) as unknown as Row[];
 
   for (const line of resolved) {
     await sql`

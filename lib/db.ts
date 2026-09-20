@@ -1,6 +1,17 @@
 import { neon } from "@neondatabase/serverless";
 
-const url = process.env.DATABASE_URL;
-if (!url) throw new Error("DATABASE_URL is not configured");
+let client: ReturnType<typeof neon> | undefined;
 
-export const sql = neon(url);
+export function getSql() {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is not configured");
+  client ??= neon(url);
+  return client;
+}
+
+export const sql = new Proxy({} as ReturnType<typeof neon>, {
+  get(_target, property) {
+    const fn = getSql() as unknown as Record<PropertyKey, unknown>;
+    return fn[property];
+  },
+});
